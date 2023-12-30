@@ -1,0 +1,99 @@
+---
+
+- name: choose what to do with k3s installation
+  block:
+  - name: look for k3s
+    shell: |
+      ret=$(apk version k3s | tail -n+2)
+      test -z "$ret" && echo "k3s not installed" >&2 && exit 10
+
+      versions=$(echo $ret | sed -E 's/k3s\-([^\s ]+)\s*\([^\s ])\s*([^\s ]+)/\1 \2 \3/')
+      test "=" = "$(echo $versions | cut -d' ' -f2)" && echo "k3s installed" >&2 && exit 0
+
+      echo "k3s versions installed and available (on distro repos) differ" >&2
+      echo "echo $versions | cut -d' ' -f1,3"
+      exit 11
+    register: upgrade_check
+    changed_when: False
+    failed_when: upgrade_check.rc not in [0, 10, 11]
+    ignore_errors: True
+
+  - name: check if install needed
+    apk:
+      name: "k3s=~{{k3s_version}}"
+      state: present
+    register: install_check
+    check_mode: True
+    changed_when: False
+
+  - set_fact:
+      not_installed: "{{upgrade_check.rc == 10}}"
+      installed_different_than_repo: "{{upgrade_check.rc == 11}}"
+      installed_same_than_repo: "{{upgrade_check.rc == 0}}"
+      apk_add_will_install_stuff: "{{install_check.stdout_lines | length > 1}}"
+
+  - set_fact:
+      trigger_install: "{{not_installed}}"
+      trigger_upgrade: "{{installed_different_than_repo and apk_add_will_install_stuff}}"
+      warn_with_diff_msg: "{{installed_different_than_repo and not apk_add_will_install_stuff}}"
+
+- when: trigger_install
+  name: install k3s
+  apk:
+    name: "k3s=~{{k3s_version}}"
+    state: present
+
+- when: trigger_upgrade
+  name: upgrade k3s
+  fail:
+    msg: Automated upgrade of k3s is not implemented
+  ignore_errors: True
+
+- when: warn_with_diff_msg
+  name: display k3s upgrade message
+  fail:
+    msg: |
+      {% set installed, available = k3s_upgrade_check.stdout | split(' ') %}
+      k3s can be upgraded to {{available}} from {{installed}}
+  ignore_errors: True
+
+- name: enable k3s
+  service:
+    name: k3s
+    enabled: True
+
+- name: add k3s firewall rules
+  copy:
+    dest: "/etc/nftables.d/k3s.nft"
+    mode: "+x"
+    content: |
+      #!/usr/sbin/nft -f
+
+      table inet filter {
+        chain input {
+          type filter hook input priority 0; policy drop;
+      
+          iifname "eth1" tcp dport {2379-2380} \
+          comment "k3s server-server embedded etcd"
+      
+          iifname "eth1" tcp dport 6443 \
+          comment "k3s agent-server kubernetes api"
+      
+          iifname "eth1" udp dport {51820-51821} \
+          comment "k3s node-node flannel wireguard"
+      
+          iifname "eth1" tcp dport 10250 \
+          comment "k3s kubelet metrics"
+        }
+      }
+  notify: restart firewall
+
+- name: apply k3s config - create dirs
+  file:
+    state: directory
+    path: /etc/rancher/k3s/
+
+- name: apply k3s config - template files
+  template:
+    src: etc/rancher/k3s/config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml

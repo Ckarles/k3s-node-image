@@ -1,0 +1,11 @@
+---
+
+- name: restart firewall
+  ansible.builtin.service:
+    name: nftables
+    state: restarted
+
+- name: restart network
+  ansible.builtin.service:
+    name: networking
+    state: restarted

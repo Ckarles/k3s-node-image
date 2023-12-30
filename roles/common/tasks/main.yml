@@ -1,0 +1,47 @@
+---
+
+- name: update apk repo
+  apk:
+    update_cache: True
+
+- name: upgrade packages
+  shell: apk upgrade --ignore k3s
+  register: apk_upgrade
+  changed_when: apk_upgrade.stdout_lines | length > 1
+
+- name: add private network interface
+  blockinfile:
+    path: /etc/network/interfaces
+    block: |
+      auto eth1
+      iface eth1 inet dhcp
+  notify: restart network
+
+- name: install firewall (nftables)
+  apk:
+    name: nftables
+    state: present
+  notify: restart firewall
+
+- name: add ssh firewall rules
+  copy:
+    dest: "/etc/nftables.d/ssh.nft"
+    mode: "+x"
+    content: |
+      #!/usr/sbin/nft -f
+
+      table inet filter {
+        chain input {
+          type filter hook input priority 0; policy drop;
+
+          tcp dport ssh accept \
+          comment "Accept connections to port 22 (ssh)"
+        }
+      }
+  notify: restart firewall
+
+- name: enable firewall
+  service:
+    name: nftables
+    state: started
+    enabled: True

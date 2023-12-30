@@ -1,0 +1,12 @@
+---
+
+- hosts: all
+  become: yes
+
+  vars:
+    interpreter_python: "python3"
+    k3s_version: "1.28"
+
+  roles:
+    - common
+    - k3s
